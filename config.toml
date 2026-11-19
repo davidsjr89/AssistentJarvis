@@ -1,7 +1,7 @@
 [ollama]
 base_url = "http://127.0.0.1:11434/v1"
 model_general = "gemma4:12b"
-model_code = "qwen2.5-coder:14b"
+model_code = "gemma4:12b"
 
 [paths]
 workspace = "~/Projetos"

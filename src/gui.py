@@ -1,6 +1,6 @@
+import base64
 import fcntl
 import html
-import time
 import json
 import math
 import os
@@ -8,18 +8,20 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from datetime import datetime
 from pathlib import Path
 
 import markdown
-from PyQt6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QBuffer, QIODevice, QMimeData, QPointF, QRectF, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QAction,
     QBrush,
     QColor,
     QFont,
     QIcon,
+    QImage,
     QKeySequence,
     QPainter,
     QPen,
@@ -30,11 +32,12 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMenu,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QSizeGrip,
@@ -74,6 +77,11 @@ QFrame#TopBar {
     border-top-left-radius: 15px;
     border-top-right-radius: 15px;
 }
+QFrame#AttachBar {
+    background-color: rgba(12, 26, 44, 230);
+    border: 1px solid rgba(0, 229, 255, 95);
+    border-radius: 10px;
+}
 QLabel {
     color: #d8f3ff;
     font-family: "JetBrains Mono", "Fira Code", "Noto Sans", monospace;
@@ -88,12 +96,6 @@ QLabel#BrandTitle {
 QLabel#SubLabel {
     color: #6b8ba4;
     font-size: 10px;
-    letter-spacing: 1px;
-}
-QLabel#MetricTitle {
-    color: #5bc0de;
-    font-size: 10px;
-    font-weight: 700;
     letter-spacing: 1px;
 }
 QLabel#MetricVal {
@@ -124,16 +126,16 @@ QScrollBar::handle:vertical {
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0px;
 }
-QLineEdit {
-    background-color: rgba(11, 20, 34, 230);
-    border: 1px solid rgba(0, 229, 255, 80);
+QPlainTextEdit#PromptInput {
+    background-color: rgba(11, 20, 34, 235);
+    border: 1px solid rgba(0, 229, 255, 85);
     border-radius: 10px;
-    padding: 11px 15px;
+    padding: 9px 14px;
     font-family: "Noto Sans", sans-serif;
     font-size: 13.5px;
     color: #ffffff;
 }
-QLineEdit:focus {
+QPlainTextEdit#PromptInput:focus {
     border: 1px solid #00e5ff;
     background-color: rgba(14, 26, 44, 245);
 }
@@ -237,6 +239,22 @@ def build_tray_icon() -> QIcon:
     return QIcon(pixmap)
 
 
+def encode_qimage_to_base64(image: QImage, max_width: int = 1600) -> tuple[str, QPixmap]:
+    """Redimensiona prints gigantes mantendo nitidez e converte para PNG base64."""
+    img = image
+    if img.width() > max_width:
+        img = img.scaledToWidth(max_width, Qt.TransformationMode.SmoothTransformation)
+
+    buf = QBuffer()
+    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    img.save(buf, "PNG")
+    b64 = base64.b64encode(bytes(buf.data())).decode("ascii")
+    thumb = QPixmap.fromImage(img).scaled(
+        76, 44, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+    )
+    return b64, thumb
+
+
 class IpcListenerThread(QThread):
     command_received = pyqtSignal(str)
 
@@ -283,13 +301,59 @@ def speak_async(text: str) -> None:
         pass
 
 
+class ChatInputBox(QPlainTextEdit):
+    """Campo multi-linha expansível: Enter envia, Ctrl+Enter/Shift+Enter pula linha, Ctrl+V cola print."""
+
+    submit_requested = pyqtSignal()
+    image_pasted = pyqtSignal(QImage)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("PromptInput")
+        self.setPlaceholderText("Digite um comando... (Enter: enviar | Ctrl+Enter: pular linha | Ctrl+V: colar print)")
+        self.setFixedHeight(42)
+        self.document().contentsChanged.connect(self._adjust_height)
+
+    def _adjust_height(self) -> None:
+        doc_lines = max(1, int(self.document().size().height()))
+        line_h = self.fontMetrics().lineSpacing()
+        target = min(156, max(42, doc_lines * line_h + 22))
+        if self.height() != target:
+            self.setFixedHeight(target)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
+                self.insertPlainText("\n")
+                return
+            self.submit_requested.emit()
+            return
+        super().keyPressEvent(event)
+
+    def insertFromMimeData(self, source: QMimeData) -> None:
+        if source.hasImage():
+            img = source.imageData()
+            if isinstance(img, QImage) and not img.isNull():
+                self.image_pasted.emit(img)
+                return
+        if source.hasUrls():
+            for url in source.urls():
+                local = url.toLocalFile()
+                if local.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                    img = QImage(local)
+                    if not img.isNull():
+                        self.image_pasted.emit(img)
+                        return
+        super().insertFromMimeData(source)
+
+
 class ArcReactorWidget(QWidget):
     """Núcleo holográfico animado em QPainter puro (zero overhead quando oculto)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(148, 148)
-        self.state = "idle"  # idle | thinking | listening | error
+        self.state = "idle"
         self.angle_outer = 0.0
         self.angle_mid = 0.0
         self.angle_inner = 0.0
@@ -297,7 +361,7 @@ class ArcReactorWidget(QWidget):
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
-        self.timer.start(33)  # ~30 FPS
+        self.timer.start(33)
 
     def set_state(self, state: str) -> None:
         self.state = state
@@ -334,7 +398,6 @@ class ArcReactorWidget(QWidget):
         primary, secondary, label = self._palette()
         pulse = 0.5 + 0.5 * math.sin(self.pulse_phase)
 
-        # Halo radial suave
         halo = QRadialGradient(QPointF(cx, cy), 70.0)
         c0 = QColor(primary)
         c0.setAlpha(int(65 + 45 * pulse))
@@ -347,38 +410,29 @@ class ArcReactorWidget(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.drawEllipse(QPointF(cx, cy), 70.0, 70.0)
 
-        # Anel externo segmentado
         r_out = QRectF(cx - 62, cy - 62, 124, 124)
-        pen_out = QPen(QColor(primary.red(), primary.green(), primary.blue(), 170), 2.2)
-        p.setPen(pen_out)
+        p.setPen(QPen(QColor(primary.red(), primary.green(), primary.blue(), 170), 2.2))
         for seg in range(4):
-            start = int((self.angle_outer + seg * 90) * 16)
-            p.drawArc(r_out, start, 56 * 16)
+            p.drawArc(r_out, int((self.angle_outer + seg * 90) * 16), 56 * 16)
 
-        # Anel intermediário contra-rotativo
         r_mid = QRectF(cx - 48, cy - 48, 96, 96)
-        pen_mid = QPen(QColor(secondary.red(), secondary.green(), secondary.blue(), 210), 3.0)
-        p.setPen(pen_mid)
+        p.setPen(QPen(QColor(secondary.red(), secondary.green(), secondary.blue(), 210), 3.0))
         for seg in range(3):
-            start = int((self.angle_mid + seg * 120) * 16)
-            p.drawArc(r_mid, start, 75 * 16)
+            p.drawArc(r_mid, int((self.angle_mid + seg * 120) * 16), 75 * 16)
 
-        # Marcações finas (ticks de HUD)
         p.setPen(QPen(QColor(primary.red(), primary.green(), primary.blue(), 95), 1.2))
         for i in range(24):
             ang = math.radians(i * 15 + self.angle_outer * 0.3)
-            x1, y1 = cx + 53 * math.cos(ang), cy + 53 * math.sin(ang)
-            x2, y2 = cx + 57 * math.cos(ang), cy + 57 * math.sin(ang)
-            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            p.drawLine(
+                QPointF(cx + 53 * math.cos(ang), cy + 53 * math.sin(ang)),
+                QPointF(cx + 57 * math.cos(ang), cy + 57 * math.sin(ang)),
+            )
 
-        # Anel interno rápido
         r_in = QRectF(cx - 33, cy - 33, 66, 66)
         p.setPen(QPen(primary, 1.8))
         for seg in range(6):
-            start = int((self.angle_inner + seg * 60) * 16)
-            p.drawArc(r_in, start, 34 * 16)
+            p.drawArc(r_in, int((self.angle_inner + seg * 60) * 16), 34 * 16)
 
-        # Núcleo central pulsante
         core_r = 21.0 + 3.0 * pulse
         core_grad = QRadialGradient(QPointF(cx, cy), core_r)
         core_grad.setColorAt(0.0, QColor(230, 252, 255, 220))
@@ -388,7 +442,6 @@ class ArcReactorWidget(QWidget):
         p.setPen(QPen(primary, 1.4))
         p.drawEllipse(QPointF(cx, cy), core_r, core_r)
 
-        # Rótulo central
         p.setPen(QColor("#041018"))
         p.setFont(QFont("JetBrains Mono", 7, QFont.Weight.Bold))
         p.drawText(QRectF(cx - 30, cy - 8, 60, 16), Qt.AlignmentFlag.AlignCenter, label)
@@ -407,7 +460,6 @@ class TelemetryWorker(QThread):
             "ram_used": 0.0,
             "ram_total": 32.0,
         }
-        # 1. RAM direta via /proc/meminfo (zero subprocesso, imune a idioma)
         try:
             meminfo = {}
             with open("/proc/meminfo", "r", encoding="utf-8") as f:
@@ -422,7 +474,6 @@ class TelemetryWorker(QThread):
         except Exception:
             pass
 
-        # 2. RTX 5080 via nvidia-smi
         try:
             out = subprocess.check_output(
                 [
@@ -446,16 +497,20 @@ class PromptWorker(QThread):
     finished_ok = pyqtSignal(dict)
     finished_err = pyqtSignal(str)
 
-    def __init__(self, prompt: str):
+    def __init__(self, prompt: str, images: list[str] | None = None):
         super().__init__()
         self.prompt = prompt
+        self.images = images or []
 
     def run(self) -> None:
         try:
+            payload: dict = {"prompt": self.prompt}
+            if self.images:
+                payload["images"] = self.images
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                s.settimeout(180)
+                s.settimeout(240)
                 s.connect(DAEMON_SOCKET)
-                s.sendall(json.dumps({"prompt": self.prompt}, ensure_ascii=False).encode("utf-8"))
+                s.sendall(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
                 s.shutdown(socket.SHUT_WR)
                 chunks = []
                 while data := s.recv(65536):
@@ -526,14 +581,15 @@ class JarvisWindow(QWidget):
         self.voice_worker: VoiceWorker | None = None
         self.telemetry_worker: TelemetryWorker | None = None
         self.messages_html: list[str] = []
+        self.attached_image_b64: str | None = None
         self.pinned = False
 
         self.setWindowTitle("J.A.R.V.I.S. // CachyOS Core")
         self.setWindowIcon(icon)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.resize(980, 640)
-        self.setMinimumSize(760, 500)
+        self.resize(1000, 660)
+        self.setMinimumSize(780, 520)
         self.setStyleSheet(HUD_STYLESHEET)
 
         self._build_ui()
@@ -543,7 +599,7 @@ class JarvisWindow(QWidget):
 
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.hide)
         self._append_system(
-            "SISTEMA INICIALIZADO • CachyOS Kernel BORE + RTX 5080 CUDA • Pressione [ESC] para recolher à bandeja."
+            "SISTEMA INICIALIZADO • RTX 5080 VISION + CUDA • [Ctrl+V] Cola PrintScreen • [Ctrl+Enter] Nova Linha • [Esc] Bandeja"
         )
 
     def _build_ui(self) -> None:
@@ -556,7 +612,7 @@ class JarvisWindow(QWidget):
         shell_layout.setContentsMargins(0, 0, 0, 0)
         shell_layout.setSpacing(0)
 
-        # ── BARRA SUPERIOR (ARRASTÁVEL) ──
+        # ── BARRA SUPERIOR ──
         top_bar = DraggableTopBar(self)
         top_bar.setFixedHeight(44)
         top_layout = QHBoxLayout(top_bar)
@@ -565,7 +621,7 @@ class JarvisWindow(QWidget):
         brand = QLabel("◈ J.A.R.V.I.S. // CACHYOS")
         brand.setObjectName("BrandTitle")
 
-        self.model_badge = QLabel("MODEL: gemma4:12b")
+        self.model_badge = QLabel("MODEL: gemma4:12b [VISION]")
         self.model_badge.setStyleSheet(
             "background: rgba(0, 229, 255, 22); border: 1px solid rgba(0, 229, 255, 75);"
             "border-radius: 6px; padding: 2px 8px; color: #7ef9ff; font-size: 10.5px;"
@@ -594,12 +650,12 @@ class JarvisWindow(QWidget):
         top_layout.addWidget(hide_btn)
         shell_layout.addWidget(top_bar)
 
-        # ── CORPO PRINCIPAL (SIDEBAR HUD + CHAT) ──
+        # ── CORPO PRINCIPAL ──
         body = QHBoxLayout()
         body.setContentsMargins(14, 14, 14, 12)
         body.setSpacing(14)
 
-        # SIDEBAR ESQUERDA (ARC REACTOR + TELEMETRIA + ATALHOS)
+        # SIDEBAR ESQUERDA
         side = QFrame()
         side.setObjectName("SidePanel")
         side.setFixedWidth(235)
@@ -619,7 +675,6 @@ class JarvisWindow(QWidget):
         self.status_lbl.setStyleSheet("color: #00f5d4; font-size: 11px; font-weight: 700; letter-spacing: 1px;")
         side_layout.addWidget(self.status_lbl)
 
-        # Telemetria Hardware
         sep1 = QFrame()
         sep1.setFrameShape(QFrame.Shape.HLine)
         sep1.setStyleSheet("background-color: rgba(0, 229, 255, 35); max-height: 1px;")
@@ -654,8 +709,7 @@ class JarvisWindow(QWidget):
         side_layout.addWidget(self.ram_lbl)
         side_layout.addWidget(self.ram_bar)
 
-        # Módulos MCP
-        mcp_lbl = QLabel("MCP: ● OS  ● DEV  ● GMAIL  ● WEB")
+        mcp_lbl = QLabel("MCP: ● OS ● DEV ● GMAIL ● VISION")
         mcp_lbl.setStyleSheet("color: #4cc9f0; font-size: 9.5px; margin-top: 4px;")
         side_layout.addWidget(mcp_lbl)
 
@@ -664,7 +718,6 @@ class JarvisWindow(QWidget):
         sep2.setStyleSheet("background-color: rgba(0, 229, 255, 35); max-height: 1px;")
         side_layout.addWidget(sep2)
 
-        # Comandos Rápidos
         quick_hdr = QLabel("COMANDOS RÁPIDOS")
         quick_hdr.setObjectName("SubLabel")
         side_layout.addWidget(quick_hdr)
@@ -692,20 +745,49 @@ class JarvisWindow(QWidget):
 
         body.addWidget(side)
 
-        # ÁREA DIREITA (CHAT + INPUT)
+        # ÁREA DIREITA (CHAT + PREVIEW DE PRINT + INPUT MULTI-LINHA)
         right = QVBoxLayout()
-        right.setSpacing(10)
+        right.setSpacing(8)
 
         self.chat_view = QTextBrowser()
         self.chat_view.setOpenExternalLinks(True)
         right.addWidget(self.chat_view, stretch=1)
 
+        # Barra de pré-visualização de PrintScreen anexado (oculta por padrão)
+        self.attach_bar = QFrame()
+        self.attach_bar.setObjectName("AttachBar")
+        self.attach_bar.setVisible(False)
+        attach_layout = QHBoxLayout(self.attach_bar)
+        attach_layout.setContentsMargins(10, 6, 10, 6)
+        attach_layout.setSpacing(10)
+
+        self.attach_thumb = QLabel()
+        self.attach_thumb.setFixedSize(76, 44)
+        self.attach_thumb.setStyleSheet("border: 1px solid #00e5ff; border-radius: 4px; background: #050a12;")
+
+        self.attach_info = QLabel("🖼️ PrintScreen anexado (será analisado junto com o comando)")
+        self.attach_info.setStyleSheet("color: #7ef9ff; font-size: 11.5px;")
+
+        remove_attach_btn = QPushButton("✕ Remover")
+        remove_attach_btn.clicked.connect(self.clear_attached_image)
+
+        attach_layout.addWidget(self.attach_thumb)
+        attach_layout.addWidget(self.attach_info, stretch=1)
+        attach_layout.addWidget(remove_attach_btn)
+        right.addWidget(self.attach_bar)
+
+        # Linha de entrada multi-linha + botões
         input_row = QHBoxLayout()
         input_row.setSpacing(8)
+        input_row.setAlignment(Qt.AlignmentFlag.AlignBottom)
 
-        self.input_box = QLineEdit()
-        self.input_box.setPlaceholderText("Fale ou digite um comando para o J.A.R.V.I.S...")
-        self.input_box.returnPressed.connect(self.send_current_input)
+        self.input_box = ChatInputBox()
+        self.input_box.submit_requested.connect(self.send_current_input)
+        self.input_box.image_pasted.connect(self.attach_qimage)
+
+        self.img_btn = QPushButton("🖼️ PRINT")
+        self.img_btn.setToolTip("Colar print da área de transferência ou selecionar imagem")
+        self.img_btn.clicked.connect(self.handle_image_button)
 
         self.voice_btn = QPushButton("🎙️ VOZ")
         self.voice_btn.setToolTip("Grava 5 segundos via PipeWire e transcreve na RTX 5080")
@@ -716,14 +798,14 @@ class JarvisWindow(QWidget):
         self.send_btn.clicked.connect(self.send_current_input)
 
         input_row.addWidget(self.input_box, stretch=1)
+        input_row.addWidget(self.img_btn)
         input_row.addWidget(self.voice_btn)
         input_row.addWidget(self.send_btn)
         right.addLayout(input_row)
 
-        # Rodapé discreto + alça de redimensionamento
         footer = QHBoxLayout()
-        footer_lbl = QLabel("LOCAL CUDA • ZERO-COST • SANDBOX BWRAP + HITL SECURITY")
-        footer_lbl.setStyleSheet("color: #446078; font-size: 9.5px; letter-spacing: 1px;")
+        footer_lbl = QLabel("ENTER: ENVIAR  •  CTRL+ENTER: NOVA LINHA  •  CTRL+V: COLAR PRINTSCREEN")
+        footer_lbl.setStyleSheet("color: #4c6b85; font-size: 9.5px; letter-spacing: 0.8px;")
         footer.addWidget(footer_lbl)
         footer.addStretch()
         footer.addWidget(QSizeGrip(self.shell))
@@ -733,6 +815,40 @@ class JarvisWindow(QWidget):
         shell_layout.addLayout(body, stretch=1)
 
         outer.addWidget(self.shell)
+
+    def attach_qimage(self, image: QImage) -> None:
+        b64, thumb = encode_qimage_to_base64(image)
+        self.attached_image_b64 = b64
+        self.attach_thumb.setPixmap(thumb)
+        self.attach_info.setText(
+            f"🖼️ PrintScreen anexado ({image.width()}x{image.height()}px) • Pronto para análise visual"
+        )
+        self.attach_bar.setVisible(True)
+        self.input_box.setFocus()
+
+    def clear_attached_image(self) -> None:
+        self.attached_image_b64 = None
+        self.attach_thumb.clear()
+        self.attach_bar.setVisible(False)
+
+    def handle_image_button(self) -> None:
+        cb = QApplication.clipboard()
+        if cb and cb.mimeData() and cb.mimeData().hasImage():
+            img = cb.image()
+            if not img.isNull():
+                self.attach_qimage(img)
+                return
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Selecionar PrintScreen ou Imagem",
+            str(Path.home() / "Imagens"),
+            "Imagens (*.png *.jpg *.jpeg *.webp)",
+        )
+        if file_path:
+            img = QImage(file_path)
+            if not img.isNull():
+                self.attach_qimage(img)
 
     def _setup_tray(self) -> None:
         self.tray = QSystemTrayIcon(self.app_icon, self)
@@ -813,7 +929,6 @@ class JarvisWindow(QWidget):
 
     def hideEvent(self, event) -> None:
         super().hideEvent(event)
-        # Pausa animações e telemetria na bandeja -> ~0% CPU em segundo plano
         self.reactor.pause()
         self.clock_timer.stop()
         self.telemetry_timer.stop()
@@ -910,11 +1025,18 @@ class JarvisWindow(QWidget):
         self.messages_html.append(f'<div class="msg-sys">» {html.escape(text)}</div>')
         self._render_chat()
 
-    def _append_user(self, text: str) -> None:
+    def _append_user(self, text: str, image_b64: str | None = None) -> None:
         ts = datetime.now().strftime("%H:%M")
         safe = html.escape(text).replace("\n", "<br>")
+        img_tag = ""
+        if image_b64:
+            img_tag = (
+                f'<div style="margin-top:8px;">'
+                f'<img src="data:image/png;base64,{image_b64}" width="320" style="border-radius:6px; border:1px solid #00e5ff;" />'
+                f"</div>"
+            )
         self.messages_html.append(
-            f'<div class="msg-user"><div class="meta-user">OPERADOR • {ts}</div>{safe}</div>'
+            f'<div class="msg-user"><div class="meta-user">OPERADOR • {ts}</div>{safe}{img_tag}</div>'
         )
         self._render_chat()
 
@@ -933,18 +1055,25 @@ class JarvisWindow(QWidget):
         self.input_box.setEnabled(not busy)
         self.send_btn.setEnabled(not busy)
         self.voice_btn.setEnabled(not busy)
+        self.img_btn.setEnabled(not busy)
 
     def send_current_input(self) -> None:
-        prompt = self.input_box.text().strip()
-        if not prompt:
+        prompt = self.input_box.toPlainText().strip()
+        img_b64 = self.attached_image_b64
+        if not prompt and not img_b64:
             return
-        self.input_box.clear()
-        self.send_prompt(prompt)
+        if not prompt and img_b64:
+            prompt = "Analise esta imagem/printscreen detalhadamente e me ajude com o que está sendo exibido."
 
-    def send_prompt(self, prompt: str) -> None:
-        self._append_user(prompt)
-        self._set_state("thinking", "● PROCESSANDO CUDA...", "#ffb703", True)
-        self.worker = PromptWorker(prompt)
+        self.input_box.clear()
+        self.clear_attached_image()
+        self.send_prompt(prompt, img_b64)
+
+    def send_prompt(self, prompt: str, image_b64: str | None = None) -> None:
+        self._append_user(prompt, image_b64)
+        status = "● ANALISANDO PRINT + CUDA..." if image_b64 else "● PROCESSANDO CUDA..."
+        self._set_state("thinking", status, "#ffb703", True)
+        self.worker = PromptWorker(prompt, [image_b64] if image_b64 else [])
         self.worker.finished_ok.connect(self._on_reply)
         self.worker.finished_err.connect(self._on_error)
         self.worker.start()
@@ -952,7 +1081,7 @@ class JarvisWindow(QWidget):
     def _on_reply(self, resp: dict) -> None:
         reply = resp.get("reply", "(Sem resposta)")
         model = resp.get("model", "local")
-        self.model_badge.setText(f"MODEL: {model}")
+        self.model_badge.setText(f"MODEL: {model} [VISION]")
         self._set_state("idle", "● PROTOCOLO ATIVO", "#00f5d4", False)
         self._append_ai(model, reply)
         if self.tts_check.isChecked():
@@ -979,6 +1108,7 @@ class JarvisWindow(QWidget):
 
     def clear_memory(self) -> None:
         self.messages_html.clear()
+        self.clear_attached_image()
         self._append_system("MEMÓRIA DE SESSÃO REINICIADA.")
         self.worker = PromptWorker("/clear")
         self.worker.finished_ok.connect(lambda _: self._set_state("idle", "● PROTOCOLO ATIVO", "#00f5d4", False))

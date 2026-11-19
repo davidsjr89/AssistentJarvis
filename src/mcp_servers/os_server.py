@@ -59,7 +59,7 @@ def run_in_sandbox(project_name: str, command: str) -> str:
 
 @mcp.tool()
 def run_host_command(command: str) -> str:
-    """[Nível 3] Executa comando administrativo/sistema diretamente no host (requer aprovação)."""
+    """[Nível 3] Executa comando administrativo/sistema no host. NÃO use para listar ou ler projetos em ~/Projetos (use list_project_files e read_project_file)."""
     try:
         res = subprocess.run(
             ["/usr/bin/bash", "-c", command],
