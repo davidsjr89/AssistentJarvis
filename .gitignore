@@ -1,0 +1,33 @@
+# Ambiente virtual Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+
+# Dados locais, memória e logs de auditoria
+memory.db
+memory.db-journal
+memory.db-wal
+memory.db-shm
+audit.log
+*.log
+
+# Sockets e travas em tempo de execução
+*.sock
+*.lock
+
+# Binários compilados e modelos pesados locais (Whisper CUDA + Piper TTS)
+tools/
+
+# Segredos e credenciais OAuth (nunca versionar)
+.env
+.env.*
+credentials.json
+client_secret*.json
+token.json
+
+# Arquivos de IDE e sistema
+.vscode/
+.idea/
+.DS_Store

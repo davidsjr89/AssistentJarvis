@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b192c"/>
+      <stop offset="100%" stop-color="#040912"/>
+    </linearGradient>
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f5d4"/>
+      <stop offset="50%" stop-color="#00e5ff"/>
+      <stop offset="100%" stop-color="#0096c7"/>
+    </linearGradient>
+    <radialGradient id="coreGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="35%" stop-color="#00f5d4" stop-opacity="0.95"/>
+      <stop offset="75%" stop-color="#00b4d8" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#00b4d8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Escudo Hexagonal Escuro -->
+  <polygon points="64,6 114,35 114,93 64,122 14,93 14,35"
+           fill="url(#bgGrad)" stroke="url(#cyanGrad)" stroke-width="4.5" stroke-linejoin="round"/>
+
+  <!-- Anel HUD Interno Segmentado -->
+  <circle cx="64" cy="64" r="40" fill="none" stroke="#00e5ff" stroke-opacity="0.35"
+          stroke-width="3" stroke-dasharray="28 14"/>
+
+  <!-- Triângulo Prismático (Núcleo Mark VII / J.A.R.V.I.S.) -->
+  <polygon points="64,97 33,44 95,44"
+           fill="#00e5ff" fill-opacity="0.14" stroke="url(#cyanGrad)" stroke-width="4.5" stroke-linejoin="round"/>
+
+  <!-- Linhas de Circuito Tecnológicas -->
+  <line x1="64" y1="12" x2="64" y2="30" stroke="#00f5d4" stroke-width="3" stroke-linecap="round"/>
+  <line x1="20" y1="88" x2="36" y2="79" stroke="#00e5ff" stroke-width="3" stroke-linecap="round"/>
+  <line x1="108" y1="88" x2="92" y2="79" stroke="#00e5ff" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Núcleo Luminoso Central -->
+  <circle cx="64" cy="62" r="20" fill="url(#coreGlow)"/>
+  <circle cx="64" cy="62" r="7.5" fill="#e6ffff" stroke="#00e5ff" stroke-width="2"/>
+</svg>

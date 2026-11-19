@@ -1,0 +1,16 @@
+[ollama]
+base_url = "http://127.0.0.1:11434/v1"
+model_general = "gemma4:12b"
+model_code = "qwen2.5-coder:14b"
+
+[paths]
+workspace = "~/Projetos"
+socket_path = "~/Projetos/AssistentJarvis/assistant.sock"
+db_path = "~/Projetos/AssistentJarvis/memory.db"
+audit_log = "~/Projetos/AssistentJarvis/audit.log"
+
+[voice]
+whisper_bin = "~/Projetos/AssistentJarvis/tools/whisper.cpp/build/bin/whisper-cli"
+whisper_model = "~/Projetos/AssistentJarvis/tools/whisper.cpp/models/ggml-medium.bin"
+piper_bin = "~/Projetos/AssistentJarvis/tools/piper/piper"
+piper_voice = "~/Projetos/AssistentJarvis/tools/piper/voices/pt_BR-faber-medium.onnx"
